@@ -1908,32 +1908,60 @@ http.createServer((req, res) => {
 
   // ── POST /upload — restore anticheat.json
   if (req.method === 'POST' && req.url === '/upload') {
-    let body = Buffer.alloc(0);
-    req.on('data', chunk => { body = Buffer.concat([body, chunk]); });
+    let chunks = [];
+    req.on('data', chunk => chunks.push(chunk));
     req.on('end', () => {
       try {
-        const bodyStr = body.toString('utf8');
+        const body = Buffer.concat(chunks);
+        const bodyStr = body.toString('latin1'); // use latin1 to preserve bytes
 
-        // Extract secret
-        const secretMatch = bodyStr.match(/name="secret"\r\n\r\n([^\r\n]+)/);
-        const secret = secretMatch ? secretMatch[1].trim() : '';
+        // Extract boundary from Content-Type header
+        const contentType = req.headers['content-type'] || '';
+        const boundaryMatch = contentType.match(/boundary=(.+)$/);
+        if (!boundaryMatch) {
+          res.writeHead(400, { 'Content-Type': 'text/html' });
+          return res.end('<html><body style="padding:40px;background:#1a1a2e;color:red"><h2>❌ No boundary found!</h2></body></html>');
+        }
+        const boundary = '--' + boundaryMatch[1];
+
+        // Split parts
+        const parts = bodyStr.split(boundary).filter(p => p !== '--\r\n' && p.trim() !== '' && p !== '--');
+
+        let secret = '';
+        let jsonContent = '';
+
+        for (const part of parts) {
+          if (part.includes('name="secret"')) {
+            const val = part.split('\r\n\r\n')[1];
+            if (val) secret = val.replace(/\r\n--$/, '').trim();
+          }
+          if (part.includes('name="file"')) {
+            const val = part.split('\r\n\r\n').slice(1).join('\r\n\r\n');
+            if (val) jsonContent = val.replace(/\r\n--$/, '').trim();
+          }
+        }
+
         if (secret !== UPLOAD_SECRET) {
           res.writeHead(403, { 'Content-Type': 'text/html' });
           return res.end('<html><body style="padding:40px;background:#1a1a2e;color:red"><h2>❌ Wrong secret key!</h2></body></html>');
         }
 
-        // Extract JSON from multipart
-        const jsonMatch = bodyStr.match(/name="file"[^\r\n]*\r\n[^\r\n]*\r\n\r\n([\s\S]*?)\r\n--/);
-        if (!jsonMatch) {
+        if (!jsonContent) {
           res.writeHead(400, { 'Content-Type': 'text/html' });
-          return res.end('<html><body style="padding:40px;background:#1a1a2e;color:red"><h2>❌ No file found!</h2></body></html>');
+          return res.end('<html><body style="padding:40px;background:#1a1a2e;color:red"><h2>❌ No file content found! Try again.</h2></body></html>');
         }
 
-        const jsonContent = jsonMatch[1];
         // Validate JSON
         const parsed = JSON.parse(jsonContent);
+
+        // Make sure /data directory exists
+        if (!fs.existsSync(DATA_DIR)) {
+          fs.mkdirSync(DATA_DIR, { recursive: true });
+        }
+
         // Save to disk
         fs.writeFileSync(DATA_FILE, JSON.stringify(parsed, null, 2), 'utf8');
+
         // Reload into memory
         Object.assign(acDB, { badServers: {}, violations: {}, giveaways: {}, ...parsed });
 
@@ -1941,13 +1969,13 @@ http.createServer((req, res) => {
         return res.end(`
           <html><body style="font-family:sans-serif;padding:40px;background:#1a1a2e;color:#fff">
             <h2>✅ Data restored successfully!</h2>
-            <p>anticheat.json uploaded and loaded into memory.</p>
+            <p>anticheat.json saved to <code>${DATA_FILE}</code></p>
             <p style="color:#aaa">You can now close this page.</p>
           </body></html>
         `);
       } catch (e) {
         res.writeHead(500, { 'Content-Type': 'text/html' });
-        return res.end(`<html><body style="padding:40px;background:#1a1a2e;color:red"><h2>❌ Error: ${e.message}</h2></body></html>`);
+        return res.end(`<html><body style="padding:40px;background:#1a1a2e;color:red"><h2>❌ Error: ${e.message}</h2><pre>${e.stack}</pre></body></html>`);
       }
     });
     return;
