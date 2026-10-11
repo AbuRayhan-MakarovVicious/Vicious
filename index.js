@@ -1880,8 +1880,86 @@ client.on(Events.InteractionCreate, async (interaction) => {
 // =========================================
 // ✅ KEEP-ALIVE HTTP SERVER (Railway)
 // =========================================
-http.createServer((req, res) => { res.writeHead(200); res.end('Bot is running'); })
-  .listen(process.env.PORT || 3000);
+// =========================================
+// ✅ HTTP SERVER — keep-alive + /upload endpoint
+// =========================================
+const UPLOAD_SECRET = process.env.UPLOAD_SECRET || 'vicious-secret-2024';
+
+http.createServer((req, res) => {
+
+  // ── GET / — upload page
+  if (req.method === 'GET' && req.url === '/') {
+    res.writeHead(200, { 'Content-Type': 'text/html' });
+    return res.end(`
+      <html><body style="font-family:sans-serif;padding:40px;background:#1a1a2e;color:#fff">
+        <h2>🤖 Vicious Bot — Data Restore</h2>
+        <form method="POST" action="/upload" enctype="multipart/form-data">
+          <p><b>Secret Key:</b><br>
+          <input name="secret" type="password" style="padding:8px;width:300px;margin:8px 0;border-radius:4px;border:none"></p>
+          <p><b>anticheat.json file:</b><br>
+          <input name="file" type="file" accept=".json" style="padding:8px;margin:8px 0"></p>
+          <button type="submit" style="padding:10px 24px;background:#7289da;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:16px">
+            Upload & Restore
+          </button>
+        </form>
+      </body></html>
+    `);
+  }
+
+  // ── POST /upload — restore anticheat.json
+  if (req.method === 'POST' && req.url === '/upload') {
+    let body = Buffer.alloc(0);
+    req.on('data', chunk => { body = Buffer.concat([body, chunk]); });
+    req.on('end', () => {
+      try {
+        const bodyStr = body.toString('utf8');
+
+        // Extract secret
+        const secretMatch = bodyStr.match(/name="secret"\r\n\r\n([^\r\n]+)/);
+        const secret = secretMatch ? secretMatch[1].trim() : '';
+        if (secret !== UPLOAD_SECRET) {
+          res.writeHead(403, { 'Content-Type': 'text/html' });
+          return res.end('<html><body style="padding:40px;background:#1a1a2e;color:red"><h2>❌ Wrong secret key!</h2></body></html>');
+        }
+
+        // Extract JSON from multipart
+        const jsonMatch = bodyStr.match(/name="file"[^\r\n]*\r\n[^\r\n]*\r\n\r\n([\s\S]*?)\r\n--/);
+        if (!jsonMatch) {
+          res.writeHead(400, { 'Content-Type': 'text/html' });
+          return res.end('<html><body style="padding:40px;background:#1a1a2e;color:red"><h2>❌ No file found!</h2></body></html>');
+        }
+
+        const jsonContent = jsonMatch[1];
+        // Validate JSON
+        const parsed = JSON.parse(jsonContent);
+        // Save to disk
+        fs.writeFileSync(DATA_FILE, JSON.stringify(parsed, null, 2), 'utf8');
+        // Reload into memory
+        Object.assign(acDB, { badServers: {}, violations: {}, giveaways: {}, ...parsed });
+
+        res.writeHead(200, { 'Content-Type': 'text/html' });
+        return res.end(`
+          <html><body style="font-family:sans-serif;padding:40px;background:#1a1a2e;color:#fff">
+            <h2>✅ Data restored successfully!</h2>
+            <p>anticheat.json uploaded and loaded into memory.</p>
+            <p style="color:#aaa">You can now close this page.</p>
+          </body></html>
+        `);
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'text/html' });
+        return res.end(`<html><body style="padding:40px;background:#1a1a2e;color:red"><h2>❌ Error: ${e.message}</h2></body></html>`);
+      }
+    });
+    return;
+  }
+
+  // Default
+  res.writeHead(200);
+  res.end('Bot is running');
+
+}).listen(process.env.PORT || 3000, () => {
+  console.log(`✅ HTTP server on port ${process.env.PORT || 3000}`);
+});
 
 // =========================================
 // ✅ GLOBAL SAFETY NET — never let one bad error kill the whole bot
